@@ -15,6 +15,8 @@ import deezer
 from click import launch, secho
 from Cryptodome.Cipher import AES
 
+from rip.config import Config, QobuzConfig
+
 from .constants import (
     AGENT,
     AVAILABLE_QUALITY_IDS,
@@ -98,9 +100,7 @@ class QobuzClient(Client):
     source = "qobuz"
     max_quality = 4
 
-    # ------- Public Methods -------------
-    def __init__(self):
-        """Create a QobuzClient object."""
+    def __init__(self, config: Config):
         self.logged_in = False
 
     def login(self, **kwargs):
@@ -474,176 +474,55 @@ class DeezerClient(Client):
     source = "deezer"
     max_quality = 2
 
-    def __init__(self):
-        """Create a DeezerClient."""
+    def __init__(self, config: Config):
         self.client = deezer.Deezer()
 
         # no login required
         self.logged_in = False
+        self.config = config.deezer
 
-    def search(self, query: str, media_type: str = "album", limit: int = 200) -> dict:
-        """Search API for query.
-
-        :param query:
-        :type query: str
-        :param media_type:
-        :type media_type: str
-        :param limit:
-        :type limit: int
-        """
-        # TODO: use limit parameter
-        try:
-            if media_type == "featured":
-                if query:
-                    search_function = getattr(self.client.api, f"get_editorial_{query}")
-                else:
-                    search_function = self.client.api.get_editorial_releases
-
-            else:
-                search_function = getattr(self.client.api, f"search_{media_type}")
-        except AttributeError:
-            raise Exception
-
-        response = search_function(query, limit=limit)
-        return response
-
-    def login(self, **kwargs):
-        """Log into Deezer.
-
-        :param kwargs:
-        """
-        try:
-            arl = kwargs["arl"]
-        except KeyError:
+    async def login(self):
+        arl = self.config.arl
+        if not arl:
             raise MissingCredentials
-
         success = self.client.login_via_arl(arl)
         if not success:
             raise AuthenticationError
-
         self.logged_in = True
 
-    def get(self, meta_id: Union[str, int], media_type: str = "album"):
-        """Get metadata.
+    async def get_metadata(self, item_id: str, media_type: str) -> dict:
+        pass
 
-        :param meta_id:
-        :type meta_id: Union[str, int]
-        :param type_:
-        :type type_: str
-        """
-        GET_FUNCTIONS = {
-            "track": self.client.api.get_track,
-            "album": self.client.api.get_album,
-            "playlist": self.client.api.get_playlist,
-            "artist": self.client.api.get_artist,
-        }
+    async def search(
+        self, query: str, media_type: str, limit: int = 200
+    ) -> SearchResult:
+        pass
 
-        get_item = GET_FUNCTIONS[media_type]
-        item = get_item(meta_id)
-        if media_type in ("album", "playlist"):
-            tracks = getattr(self.client.api, f"get_{media_type}_tracks")(
-                meta_id, limit=-1
-            )
-            item["tracks"] = tracks["data"]
-            item["track_total"] = len(tracks["data"])
-        elif media_type == "artist":
-            albums = self.client.api.get_artist_albums(meta_id)
-            item["albums"] = albums["data"]
-
-        logger.debug(item)
-        return item
-
-    def get_file_url(self, meta_id: str, quality: int = 2) -> dict:
-        """Get downloadable url for a track.
-
-        :param meta_id: The track ID.
-        :type meta_id: Union[str, int]
-        :param quality:
-        :type quality: int
-        """
-        # TODO: optimize such that all of the ids are requested at once
-        dl_info: Dict[str, Any] = {"quality": quality}
-
-        track_info = self.client.gw.get_track(meta_id)
-        logger.debug("Track info: %s", track_info)
-
-        dl_info["fallback_id"] = safe_get(track_info, "FALLBACK", "SNG_ID")
-
-        format_info = get_quality(quality, "deezer")
-        assert isinstance(format_info, tuple)  # for typing
-        format_no, format_str = format_info
-
-        dl_info["size_to_quality"] = {
-            int(track_info.get(f"FILESIZE_{format}")): self._quality_id_from_filetype(
-                format
-            )
-            for format in DEEZER_FORMATS
-        }
-
-        token = track_info["TRACK_TOKEN"]
-        try:
-            url = self.client.get_track_url(token, format_str)
-        except deezer.WrongLicense:
-            raise NonStreamable(
-                "The requested quality is not available with your subscription. "
-                "Deezer HiFi is required for quality 2. Otherwise, the maximum "
-                "quality allowed is 1."
-            )
-
-        if url is None:
-            url = self._get_encrypted_file_url(
-                meta_id, track_info["MD5_ORIGIN"], track_info["MEDIA_VERSION"]
-            )
-
-        dl_info["url"] = url
-        logger.debug("dl_info %s", dl_info)
-        return dl_info
-
-    def _get_encrypted_file_url(
-        self, meta_id: str, track_hash: str, media_version: str
-    ):
-        format_number = 1
-
-        url_bytes = b"\xa4".join(
-            (
-                track_hash.encode(),
-                str(format_number).encode(),
-                str(meta_id).encode(),
-                str(media_version).encode(),
-            )
-        )
-        url_hash = hashlib.md5(url_bytes).hexdigest()
-        info_bytes = bytearray(url_hash.encode())
-        info_bytes.extend(b"\xa4")
-        info_bytes.extend(url_bytes)
-        info_bytes.extend(b"\xa4")
-        # Pad the bytes so that len(info_bytes) % 16 == 0
-        padding_len = 16 - (len(info_bytes) % 16)
-        info_bytes.extend(b"." * padding_len)
-
-        logger.debug("Info bytes: %s", info_bytes)
-        path = self._gen_url_path(info_bytes)
-        logger.debug(path)
-        return f"https://e-cdns-proxy-{track_hash[0]}.dzcdn.net/mobile/1/{path}"
-
-    def _gen_url_path(self, data):
-        return binascii.hexlify(
-            AES.new("jo6aey6haid2Teih".encode(), AES.MODE_ECB).encrypt(data)
-        ).decode("utf-8")
-
-    @staticmethod
-    def _quality_id_from_filetype(filetype: str) -> Optional[int]:
-        return {
-            "MP3_128": 0,
-            "MP3_256": 0,
-            "MP3_320": 1,
-            "FLAC": 2,
-        }.get(filetype)
+    async def get_downloadable(self, item_id: str, quality: int = 2) -> Downloadable:
+        pass
 
 
-class DeezloaderClient(Client):
-    """DeezloaderClient."""
+class SoundcloudClient:
+    source = "soundcloud"
+    logged_in = False
 
+    def __init__(self, config: Config):
+        self.config = config.soundcloud
+
+    async def login(self):
+        client_id, app_version = self.config.client_id, self.config.app_version
+        pass
+
+    async def get_downloadable(self, track: dict, _) -> Downloadable:
+        pass
+
+    async def search(
+        self, query: str, media_type: str, limit: int = 50, offset: int = 0
+    ) -> SearchResult:
+        pass
+
+
+class DeezloaderClient:
     source = "deezer"
     max_quality = 2
 
