@@ -39,14 +39,14 @@ class ArtistSummary(Summary):
         return "artist"
 
     def summarize(self) -> str:
-        return clean(self.name)
+        return self.name
 
     def preview(self) -> str:
         return f"{self.num_albums} Albums\n\nID: {self.id}"
 
     @classmethod
     def from_item(cls, item: dict):
-        id = item["id"]
+        id = str(item["id"])
         name = (
             item.get("name")
             or item.get("performer", {}).get("name")
@@ -73,15 +73,14 @@ class TrackSummary(Summary):
         return "track"
 
     def summarize(self) -> str:
-        # This char breaks the menu for some reason
-        return f"{clean(self.name)} by {clean(self.artist)}"
+        return f"{self.name} by {self.artist}"
 
     def preview(self) -> str:
         return f"Released on:\n{self.date_released}\n\nID: {self.id}"
 
     @classmethod
     def from_item(cls, item: dict):
-        id = item["id"]
+        id = str(item["id"])
         name = item.get("title") or item.get("name") or "Unknown"
         artist = (
             item.get("performer", {}).get("name")
@@ -120,14 +119,14 @@ class AlbumSummary(Summary):
         return "album"
 
     def summarize(self) -> str:
-        return f"{clean(self.name)} by {clean(self.artist)}"
+        return f"{self.name} by {self.artist}"
 
     def preview(self) -> str:
         return f"Date released:\n{self.date_released}\n\n{self.num_tracks} Tracks\n\nID: {self.id}"
 
     @classmethod
     def from_item(cls, item: dict):
-        id = item["id"]
+        id = str(item["id"])
         name = item.get("title") or "Unknown Title"
         artist = (
             item.get("performer", {}).get("name")
@@ -175,7 +174,7 @@ class LabelSummary(Summary):
 
     @classmethod
     def from_item(cls, item: dict):
-        id = item["id"]
+        id = str(item["id"])
         name = item["name"]
         return cls(id, name)
 
@@ -189,14 +188,11 @@ class PlaylistSummary(Summary):
     description: str
 
     def summarize(self) -> str:
-        name = clean(self.name)
-        creator = clean(self.creator)
-        return f"{name} by {creator}"
+        return f"{self.name} by {self.creator}"
 
     def preview(self) -> str:
-        desc = clean(self.description, trunc=False)
         wrapped = "\n".join(
-            textwrap.wrap(desc, os.get_terminal_size().columns - 4 or 70),
+            textwrap.wrap(self.description, os.get_terminal_size().columns - 4 or 70),
         )
         return f"{self.num_tracks} tracks\n\nDescription:\n{wrapped}\n\nID: {self.id}"
 
@@ -218,7 +214,6 @@ class PlaylistSummary(Summary):
             item.get("tracks_count")
             or item.get("nb_tracks")
             or item.get("numberOfTracks")
-            or len(item.get("tracks", []))
             or -1
         )
         description = item.get("description") or "No description"
@@ -279,10 +274,13 @@ class SearchResults:
         i = int(ind.group(0))
         return self.results[i - 1].preview()
 
-
-def clean(s: str, trunc=True) -> str:
-    s = s.replace("|", "").replace("\n", "")
-    if trunc:
-        max_chars = 50
-        return s[:max_chars]
-    return s
+    def as_list(self, source: str) -> list[dict[str, str]]:
+        return [
+            {
+                "source": source,
+                "media_type": i.media_type(),
+                "id": i.id,
+                "desc": i.summarize(),
+            }
+            for i in self.results
+        ]

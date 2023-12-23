@@ -1,4 +1,5 @@
 import asyncio
+import json
 import logging
 import os
 import shutil
@@ -36,14 +37,8 @@ def coro(f):
     "--config-path",
     default=DEFAULT_CONFIG_PATH,
     help="Path to the configuration file",
-    type=click.Path(readable=True, writable=True),
 )
-@click.option(
-    "-f",
-    "--folder",
-    help="The folder to download items into.",
-    type=click.Path(file_okay=False, dir_okay=True),
-)
+@click.option("-f", "--folder", help="The folder to download items into.")
 @click.option(
     "-ndb",
     "--no-db",
@@ -52,14 +47,11 @@ def coro(f):
     is_flag=True,
 )
 @click.option(
-    "-q",
-    "--quality",
-    help="The maximum quality allowed to download",
-    type=click.IntRange(min=0, max=4),
+    "-q", "--quality", help="The maximum quality allowed to download", type=int
 )
 @click.option(
     "-c",
-    "--codec",
+    "--convert",
     help="Convert the downloaded files to an audio codec (ALAC, FLAC, MP3, AAC, or OGG)",
 )
 @click.option(
@@ -75,7 +67,7 @@ def coro(f):
     is_flag=True,
 )
 @click.pass_context
-def rip(ctx, config_path, folder, no_db, quality, codec, no_progress, verbose):
+def rip(ctx, config_path, folder, no_db, quality, convert, no_progress, verbose):
     """Streamrip: the all in one music downloader."""
     global logger
     logging.basicConfig(
@@ -121,8 +113,7 @@ def rip(ctx, config_path, folder, no_db, quality, codec, no_progress, verbose):
         return
 
     # set session config values to command line args
-    if no_db:
-        c.session.database.downloads_enabled = False
+    c.session.database.downloads_enabled = not no_db
     if folder is not None:
         c.session.downloads.folder = folder
 
@@ -132,10 +123,10 @@ def rip(ctx, config_path, folder, no_db, quality, codec, no_progress, verbose):
         c.session.deezer.quality = quality
         c.session.soundcloud.quality = quality
 
-    if codec is not None:
+    if convert is not None:
         c.session.conversion.enabled = True
-        assert codec.upper() in ("ALAC", "FLAC", "OGG", "MP3", "AAC")
-        c.session.conversion.codec = codec.upper()
+        assert convert.upper() in ("ALAC", "FLAC", "OGG", "MP3", "AAC")
+        c.session.conversion.codec = convert.upper()
 
     if no_progress:
         c.session.cli.progress_bars = False
@@ -158,7 +149,9 @@ async def url(ctx, urls):
 
 @rip.command()
 @click.argument(
-    "path", required=True, type=click.Path(file_okay=True, dir_okay=False, exists=True)
+    "path",
+    required=True,
+    type=click.Path(exists=True, readable=True, file_okay=True, dir_okay=False),
 )
 @click.pass_context
 @coro
@@ -171,8 +164,26 @@ async def file(ctx, path):
     """
     with ctx.obj["config"] as cfg:
         async with Main(cfg) as main:
-            async with aiofiles.open(path) as f:
-                await main.add_all([line async for line in f])
+            async with aiofiles.open(path, "r") as f:
+                try:
+                    items = json.loads(await f.read())
+                    loaded = True
+                except json.JSONDecodeError:
+                    items = [line async for line in f]
+                    loaded = False
+            if loaded:
+                console.print(
+                    f"Detected json file. Loading [yellow]{len(items)}[/yellow] items"
+                )
+                await main.add_all_by_id(
+                    [(i["source"], i["media_type"], i["id"]) for i in items]
+                )
+            else:
+                console.print(
+                    f"Detected list of urls. Loading [yellow]{len(items)}[/yellow] items"
+                )
+                await main.add_all(items)
+
             await main.resolve()
             await main.rip()
 
